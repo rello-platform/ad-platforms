@@ -13,6 +13,7 @@
 import { frozenBodyMatches } from "../jcs.js";
 import { normalizeEmail, normalizePhone, sha256Hex } from "../normalize.js";
 import { httpRequest, parseJsonSafe } from "../http.js";
+import { GOOGLE_PROCESSING_ERROR_REASONS } from "./processing-error-reasons.js";
 import { realSleep, } from "../types.js";
 export const GOOGLE_DATAMANAGER_DEFAULT_API_BASE = "https://datamanager.googleapis.com";
 export const GOOGLE_DATAMANAGER_API_VERSION = "v1";
@@ -126,11 +127,12 @@ const CANONICAL = new Set([
     "RESOURCE_EXHAUSTED", "FAILED_PRECONDITION", "ABORTED", "OUT_OF_RANGE", "UNIMPLEMENTED", "INTERNAL", "UNAVAILABLE", "DATA_LOSS", "UNAUTHENTICATED",
 ]);
 /**
- * GD-2954: a request-status error reason reaches a returned field or a reason only when it has the
- * shape of a Data Manager ProcessingErrorReason enum name; any other text becomes UNRECOGNIZED_REASON.
+ * GD-2954 / GD-2960: a request-status error reason reaches a returned field or a reason only when it is a
+ * name in Google's published ProcessingErrorReason enum (a fixed set, see processing-error-reasons.ts);
+ * any other text becomes UNRECOGNIZED_REASON.
  */
 function safeGoogleErrorReason(reason) {
-    return /^PROCESSING_ERROR_REASON_[A-Z0-9_]{1,80}$/.test(reason) ? reason : "UNRECOGNIZED_REASON";
+    return GOOGLE_PROCESSING_ERROR_REASONS.has(reason) ? reason : "UNRECOGNIZED_REASON";
 }
 /** The Google classes of §4.5 Rev 4 item 2. Exported for tests. */
 export function classifyGoogleResponse(r, now) {

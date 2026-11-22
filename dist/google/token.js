@@ -7,6 +7,12 @@ import { createSign } from "node:crypto";
 import { httpRequest, parseJsonSafe } from "../http.js";
 import { GOOGLE_DATAMANAGER_SCOPE } from "./client.js";
 const DEFAULT_TOKEN_URI = "https://oauth2.googleapis.com/token";
+/**
+ * GD-2960 step 2: the token endpoint's `error` value reaches a thrown message only when it is one of the
+ * RFC 6749 §5.2 codes, https://www.rfc-editor.org/rfc/rfc6749.txt §5.2 "Error Response", read 2026-11-22
+ * (prompt 1687): six codes. Anything else (an extension code, or any other text) is "unrecognized_error".
+ */
+const OAUTH_TOKEN_ERRORS = new Set(["invalid_request", "invalid_client", "invalid_grant", "unauthorized_client", "unsupported_grant_type", "invalid_scope"]);
 /** Refresh this long before the token's stated expiry. */
 const EXPIRY_SKEW_MS = 60_000;
 /**
@@ -64,7 +70,7 @@ export function serviceAccountTokenSource(credentialsJson, opts = {}) {
             throw new Error(`Google token request failed: ${r.reason}`);
         const j = parseJsonSafe(r.text);
         if (r.status < 200 || r.status >= 300 || typeof j?.access_token !== "string" || j.access_token === "") {
-            const code = typeof j?.error === "string" ? j.error.replace(/[^a-z_]/gi, "").slice(0, 40) : "no_error_code";
+            const code = typeof j?.error === "string" ? (OAUTH_TOKEN_ERRORS.has(j.error) ? j.error : "unrecognized_error") : "no_error_code";
             throw new Error(`Google token request failed: HTTP ${r.status} ${code}`);
         }
         const ttl = typeof j.expires_in === "number" && j.expires_in > 0 ? j.expires_in * 1000 : 3_600_000;

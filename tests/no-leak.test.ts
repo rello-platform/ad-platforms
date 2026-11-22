@@ -19,8 +19,10 @@ import {
   createMetaClient,
   freezeBatch,
   hashMember,
+  serviceAccountTokenSource,
 } from "../src/index.js";
-import { deadBase, noSleep } from "./helpers.js";
+import { deadBase, noSleep, testServiceAccount } from "./helpers.js";
+import { GOOGLE_PROCESSING_ERROR_REASONS } from "../src/google/processing-error-reasons.js";
 
 const HOUSE = { tenantId: "tenant_rello_growth" };
 let fake: FakeAdServer;
@@ -134,7 +136,7 @@ describe("GD-2954: platform error-body text never reaches an outcome reason", ()
     expect(same(detail, { status: "FAILED", errorReasons: ["UNRECOGNIZED_REASON", "PROCESSING_ERROR_REASON_INVALID_GCLID"] })).toBe(true);
   });
 
-  it("conversionOutcomeFromStatus carries only enum-shaped reasons", () => {
+  it("conversionOutcomeFromStatus carries only names from the published enum", () => {
     const mk = newMarker();
     for (const status of ["FAILED", "PARTIAL_SUCCESS"] as const) {
       const out = conversionOutcomeFromStatus({ status, errorReasons: [`free text ${mk}`, `PROCESSING_ERROR_REASON_${mk}`, "PROCESSING_ERROR_REASON_INVALID_GCLID"] });
@@ -181,5 +183,90 @@ describe("GD-2954: an unusable credentials JSON logs a fixed code", () => {
     expect(fake.requests.length).toBe(before);
     expect(anyHas(cap.lines, mk)).toBe(false);
     expect(same(cap.lines, [`[ad-platforms] ADS_GOOGLE_CREDENTIALS_JSON unusable, Google is not connected (${code})`])).toBe(true);
+  });
+});
+
+/** An uppercase marker: it has the enum's character shape, so only a fixed set can stop it. */
+const upperMarker = () => `MK${randomBytes(16).toString("hex").toUpperCase()}`;
+/** A letters-only marker, so a character filter like /[^a-z_]/gi cannot strip it. */
+const letterMarker = () => Array.from(randomBytes(24), (b) => String.fromCharCode(97 + (b % 26))).join("");
+
+describe("GD-2960: a request-status error reason reaches a returned field or a reason only if it is a published enum name", () => {
+  const googleClient = () =>
+    createGoogleClient({ getAccessToken: async () => "g-leak-token", apiBase: fake.googleBase, operatingAccountId: "1234567890" }, { timeoutMs: 400, sleep: noSleep });
+  const statusBody = (requestStatus: string, reasons: string[]) => ({
+    requestStatusPerDestination: [{ requestStatus, errorInfo: { errorCounts: reasons.map((reason) => ({ recordCount: "1", reason })) } }],
+  });
+  const expectedPrefix = { FAILED: "google_request_failed", PARTIAL_SUCCESS: "google_partial_success" } as const;
+
+  it.each(["FAILED", "PARTIAL_SUCCESS"] as const)(
+    "%s with PROCESSING_ERROR_REASON_<uppercase marker>, through the client and the fake: no marker in the detail or the reason; the reason reads UNRECOGNIZED_REASON",
+    async (status) => {
+      const mk = upperMarker();
+      fake.next("google.status", { kind: "status", status: 200, body: statusBody(status, [`PROCESSING_ERROR_REASON_${mk}`]) });
+      const detail = await googleClient().requestStatusDetail(HOUSE, `fake-request-2960-${status}`);
+      const out = conversionOutcomeFromStatus(detail);
+      const reason = "reason" in out ? out.reason : "";
+      expect(fieldHas(detail, mk)).toBe(false);
+      expect(reason.includes(mk)).toBe(false);
+      expect(same(detail, { status, errorReasons: ["UNRECOGNIZED_REASON"] })).toBe(true);
+      expect(reason === `${expectedPrefix[status]}:UNRECOGNIZED_REASON`).toBe(true);
+    },
+  );
+
+  it("two published names come through unchanged (one has no _REASON_ infix, as Google writes it)", async () => {
+    const known = ["PROCESSING_ERROR_REASON_INVALID_GCLID", "PROCESSING_ERROR_OPERATING_ACCOUNT_MISMATCH_FOR_AD_IDENTIFIER"];
+    for (const status of ["FAILED", "PARTIAL_SUCCESS"] as const) {
+      fake.next("google.status", { kind: "status", status: 200, body: statusBody(status, known) });
+      const detail = await googleClient().requestStatusDetail(HOUSE, `fake-request-2960-known-${status}`);
+      expect(detail).toEqual({ status, errorReasons: known });
+      expect(conversionOutcomeFromStatus(detail)).toEqual(
+        status === "FAILED" ? { status: "rejected", reason: `google_request_failed:${known.join(",")}` } : { status: "unknown", reason: `google_partial_success:${known.join(",")}` },
+      );
+    }
+  });
+
+  it("PROCESSING_ERROR_REASON_DUPLICATE_TRANSACTION_ID alone still gives duplicate (FAILED and PARTIAL_SUCCESS)", async () => {
+    for (const status of ["FAILED", "PARTIAL_SUCCESS"] as const) {
+      fake.next("google.status", { kind: "status", status: 200, body: statusBody(status, ["PROCESSING_ERROR_REASON_DUPLICATE_TRANSACTION_ID"]) });
+      const detail = await googleClient().requestStatusDetail(HOUSE, `fake-request-2960-dup-${status}`);
+      expect(conversionOutcomeFromStatus(detail)).toEqual({ status: "duplicate" });
+    }
+  });
+
+  it("the set is the 50 names of Google's published ProcessingErrorReason enum", () => {
+    expect(GOOGLE_PROCESSING_ERROR_REASONS.size).toBe(50);
+    for (const n of ["PROCESSING_ERROR_REASON_UNSPECIFIED", "PROCESSING_ERROR_REASON_DUPLICATE_TRANSACTION_ID", "PROCESSING_ERROR_REASON_INVALID_CALL"]) {
+      expect(GOOGLE_PROCESSING_ERROR_REASONS.has(n)).toBe(true);
+    }
+  });
+});
+
+describe("GD-2960 step 2: the token endpoint's error code reaches the thrown message only if it is an RFC 6749 §5.2 code", () => {
+  let sa: { json: string; publicKey: string };
+  beforeAll(() => {
+    sa = testServiceAccount(fake.tokenUri);
+  });
+
+  it("an unlisted error code (a letters-only marker) is reported as unrecognized_error; a listed one comes through", async () => {
+    const mk = letterMarker();
+    fake.next("oauth.token", { kind: "status", status: 400, body: { error: mk, error_description: mk } });
+    let message = "";
+    try {
+      await serviceAccountTokenSource(sa.json, { timeoutMs: 400 })();
+    } catch (err) {
+      message = err instanceof Error ? err.message : "not an Error";
+    }
+    expect(message.includes(mk)).toBe(false);
+    expect(message === "Google token request failed: HTTP 400 unrecognized_error").toBe(true);
+
+    fake.next("oauth.token", { kind: "status", status: 400, body: { error: "invalid_grant", error_description: "x" } });
+    let known = "";
+    try {
+      await serviceAccountTokenSource(sa.json, { timeoutMs: 400 })();
+    } catch (err) {
+      known = err instanceof Error ? err.message : "not an Error";
+    }
+    expect(known).toBe("Google token request failed: HTTP 400 invalid_grant");
   });
 });
