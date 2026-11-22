@@ -2,6 +2,8 @@
  * Meta Conversions API client against the fake (§4.5 Rev 3 item 3, Meta column).
  * Meta: only a transport failure before the request was written is retryable; any 5xx, 429,
  * timeout or reset after writing, or 2xx without events_received is UNKNOWN and never resent.
+ * GD-2953 (audit 136): a 2xx is accepted only when events_received is an integer EQUAL to the
+ * number of events in the frozen batch; any other value is UNKNOWN (never retryable, never resent).
  */
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { createHash } from "node:crypto";
@@ -126,5 +128,72 @@ describe("Meta conversions", () => {
     const out = await client().sendConversionBatch(HOUSE, { ...b, body: new TextEncoder().encode("{}") });
     expect(out).toMatchObject({ status: "rejected" });
     expect(fake.requests.length).toBe(before);
+  });
+});
+
+/** A frozen batch of exactly three events (n = 3), so n-1, n+1 and "3" are distinct cases. */
+function batch3(id: string, datasetId: string): FrozenBatch {
+  const req = buildMetaConversionRequest(
+    { apiBase: fake.metaBase, apiVersion: "v21.0", datasetId },
+    [1, 2, 3].map((k) => ({ eventName: "Lead", eventTime: new Date("2026-11-22T20:00:00Z"), eventId: `rello:lead:${id}:${k}`, email: `p${k}@example.com` })),
+  );
+  return freezeBatch({ id, ...req });
+}
+
+describe("Meta conversions: events_received must equal the frozen batch's event count (GD-2953)", () => {
+  const N = 3;
+  const mismatches: Array<[string, unknown]> = [
+    ["0", 0],
+    ["-1", -1],
+    ["1.5", 1.5],
+    ["n-1", N - 1],
+    ["n+1", N + 1],
+    ['the string "3"', "3"],
+    ["null", null],
+  ];
+
+  it.each(mismatches)("a 200 with events_received %s is UNKNOWN (meta_events_received_mismatch), sent once, never accepted", async (label, value) => {
+    const ds = `ds-er-${label.replace(/[^a-z0-9]+/gi, "_")}`;
+    fake.next("meta.events", { kind: "status", status: 200, body: { events_received: value, messages: [], fbtrace_id: "fake-trace-x" } });
+    const before = fake.requestsOn("meta.events").length;
+    const out = await client().sendConversionBatch(HOUSE, batch3(`b-er-${label}`, ds));
+    expect(out).toEqual({ status: "unknown", reason: "meta_events_received_mismatch" });
+    expect(fake.requestsOn("meta.events").length).toBe(before + 1);
+    expect(fake.meta.events(ds)).toHaveLength(0);
+  });
+
+  it("a 200 with events_received missing is UNKNOWN (meta_2xx_without_events_received)", async () => {
+    fake.next("meta.events", { kind: "status", status: 200, body: { messages: [], fbtrace_id: "fake-trace-y" } });
+    const out = await client().sendConversionBatch(HOUSE, batch3("b-er-missing", "ds-er-missing"));
+    expect(out).toEqual({ status: "unknown", reason: "meta_2xx_without_events_received" });
+    expect(fake.meta.events("ds-er-missing")).toHaveLength(0);
+  });
+
+  it("events_received equal to n (the fake applied all three) is ACCEPTED", async () => {
+    const out = await client().sendConversionBatch(HOUSE, batch3("b-er-n", "ds-er-n"));
+    expect(out.status).toBe("accepted");
+    expect(fake.meta.events("ds-er-n")).toHaveLength(N);
+  });
+
+  it("across every mismatch case, 0 were accepted and the fake kept 0 events", async () => {
+    let accepted = 0;
+    for (const [label, value] of mismatches) {
+      const ds = `ds-er-sweep-${label.replace(/[^a-z0-9]+/gi, "_")}`;
+      fake.next("meta.events", { kind: "status", status: 200, body: { events_received: value } });
+      const out = await client().sendConversionBatch(HOUSE, batch3(`b-sweep-${label}`, ds));
+      if (out.status === "accepted") accepted++;
+      expect(fake.meta.events(ds)).toHaveLength(0);
+    }
+    expect(accepted).toBe(0);
+  });
+
+  it("a frozen batch with no events is REJECTED before any request (0 === 0 must never read as accepted)", async () => {
+    for (const [id, request] of [["b-empty-data", { data: [] }], ["b-no-data", {}]] as const) {
+      const b = freezeBatch({ id, endpoint: `${fake.metaBase}/v21.0/ds-empty/events`, apiVersion: "v21.0", request });
+      const before = fake.requests.length;
+      const out = await client().sendConversionBatch(HOUSE, b);
+      expect(out).toEqual({ status: "rejected", reason: "meta_frozen_batch_has_no_events" });
+      expect(fake.requests.length).toBe(before);
+    }
   });
 });

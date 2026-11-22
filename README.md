@@ -67,8 +67,12 @@ Audiences:
 1. The JSON shape of Meta's `operation_status` (the client reads a string, or an object's `description`, leniently).
 2. The response body of Meta's `DELETE /{audience}/users` (the client checks only the HTTP status).
 3. The Conversions API with the token in an `Authorization: Bearer` header rather than the `access_token` parameter Meta's pages show. Chosen so a frozen body carries no credential.
-4. The success field `events_received` on a Conversions API answer (a 2xx without it is `unknown`).
+4. The success field `events_received` on a Conversions API answer. A 2xx is `accepted` only when it is an integer equal to the number of events in the frozen batch; any other value, or none, is `unknown` and is never resent (GD-2953).
 5. That re-ingesting a held Google Customer Match member refreshes its added time, so a `removeAll` as of T keeps it. This is the premise of the design's replace. The fake models it that way.
+
+## Logs and reasons
+
+No console line and no `AdOutcome.reason` carries text from a caller's callback (the Google access-token source) or from a platform's error body (GD-2954). Logs carry a fixed code and, for a thrown value, only its kind (a built-in error name, `Error subclass`, or a `typeof`). Reasons carry fixed codes: transport failures carry Node's error code (`meta_before_write:ECONNREFUSED`), a Google error status reaches a reason only when it is a gRPC canonical code, and a request-status error reason only when it has the shape of a `PROCESSING_ERROR_REASON_*` name (anything else is `UNRECOGNIZED_REASON`). The Drumbeat's moved audience code (`src/meta/drumbeat-audiences.ts`, `src/google/drumbeat-customer-match.ts`) keeps its live behaviour unchanged until the Drumbeat re-pin.
 
 ## Development
 

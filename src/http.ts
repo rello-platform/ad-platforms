@@ -25,6 +25,16 @@ export interface HttpRequest {
 
 const MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
 
+/**
+ * GD-2954: a transport reason carries Node's error CODE (ECONNREFUSED, ECONNRESET,
+ * ERR_TLS_CERT_ALTNAME_INVALID, ...), never the error's message, which can carry hosts, ports or a
+ * peer certificate's names. A reason ends up in outcomes and in the caller's records.
+ */
+export function transportErrorCode(err: unknown): string {
+  const code = typeof err === "object" && err !== null ? (err as { code?: unknown }).code : undefined;
+  return typeof code === "string" && /^[A-Z][A-Z0-9_]{0,63}$/.test(code) ? code : "ERROR";
+}
+
 export function httpRequest(req: HttpRequest): Promise<HttpResult> {
   return new Promise((resolve) => {
     let url: URL;
@@ -48,6 +58,8 @@ export function httpRequest(req: HttpRequest): Promise<HttpResult> {
 
     let connected = false;
     let settled = false;
+    let tooLarge = false;
+    const code = (err: unknown) => (tooLarge ? "RESPONSE_TOO_LARGE" : transportErrorCode(err));
     const done = (r: HttpResult) => {
       if (settled) return;
       settled = true;
@@ -62,13 +74,14 @@ export function httpRequest(req: HttpRequest): Promise<HttpResult> {
       res.on("data", (c: Buffer) => {
         size += c.length;
         if (size > MAX_RESPONSE_BYTES) {
+          tooLarge = true;
           cr.destroy(new Error("response_too_large"));
           return;
         }
         chunks.push(c);
       });
       res.on("end", () => done({ kind: "response", status: res.statusCode ?? 0, text: Buffer.concat(chunks).toString("utf8") }));
-      res.on("error", (err) => done({ kind: "transport_error", written: true, reason: `response_error:${err.message}` }));
+      res.on("error", (err) => done({ kind: "transport_error", written: true, reason: `response_error:${code(err)}` }));
     });
 
     cr.on("socket", (socket) => {
@@ -79,7 +92,7 @@ export function httpRequest(req: HttpRequest): Promise<HttpResult> {
       });
     });
     cr.on("error", (err) => {
-      done({ kind: "transport_error", written: connected, reason: connected ? `after_connect:${err.message}` : `before_write:${err.message}` });
+      done({ kind: "transport_error", written: connected, reason: connected ? `after_connect:${code(err)}` : `before_write:${code(err)}` });
     });
 
     const timer = setTimeout(() => {

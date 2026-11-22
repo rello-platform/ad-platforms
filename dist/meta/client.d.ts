@@ -60,7 +60,14 @@ export declare function buildMetaConversionRequest(config: {
         data: Array<Record<string, unknown>>;
     };
 };
-/** The Meta Conversions API classes (§4.5 Rev 3 item 3). Exported for tests. */
-export declare function classifyMetaConversion(r: HttpResult): AdOutcome;
+/**
+ * The Meta Conversions API classes (§4.5 Rev 3 item 3). Exported for tests.
+ *
+ * GD-2953: a 2xx is `accepted` only when `events_received` is an integer EQUAL to `expectedEvents`,
+ * the number of events in the frozen batch. Any other value (0, negative, fractional, short, larger,
+ * a string, null) is `unknown`, never `retryable`: Meta has no deduplication this design relies on for
+ * a resend, so the caller must not resend (§4.5 Rev 3).
+ */
+export declare function classifyMetaConversion(r: HttpResult, expectedEvents: number): AdOutcome;
 export declare function createMetaClient(config: MetaClientConfig, options?: MetaClientOptions): AdPlatformClient;
 //# sourceMappingURL=client.d.ts.map

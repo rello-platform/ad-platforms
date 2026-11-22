@@ -80,17 +80,34 @@ function metaError(text) {
     const j = parseJsonSafe(text);
     return j && typeof j.error === "object" && j.error !== null ? j.error : null;
 }
-/** The Meta Conversions API classes (§4.5 Rev 3 item 3). Exported for tests. */
-export function classifyMetaConversion(r) {
+/**
+ * The number of events in a frozen Conversions API body (`{ data: [...] }`), or null when the body is
+ * not one. `buildMetaConversionRequest` always produces 1…1,000 events.
+ */
+function metaFrozenEventCount(batch) {
+    const j = parseJsonSafe(new TextDecoder().decode(batch.body));
+    return j && typeof j === "object" && Array.isArray(j.data) ? j.data.length : null;
+}
+/**
+ * The Meta Conversions API classes (§4.5 Rev 3 item 3). Exported for tests.
+ *
+ * GD-2953: a 2xx is `accepted` only when `events_received` is an integer EQUAL to `expectedEvents`,
+ * the number of events in the frozen batch. Any other value (0, negative, fractional, short, larger,
+ * a string, null) is `unknown`, never `retryable`: Meta has no deduplication this design relies on for
+ * a resend, so the caller must not resend (§4.5 Rev 3).
+ */
+export function classifyMetaConversion(r, expectedEvents) {
     if (r.kind === "transport_error") {
         return r.written ? { status: "unknown", reason: `meta_${r.reason}` } : { status: "retryable", reason: `meta_${r.reason}` };
     }
     if (r.status >= 200 && r.status < 300) {
         const j = parseJsonSafe(r.text);
-        if (j && typeof j.events_received === "number") {
+        if (!j || typeof j !== "object" || !("events_received" in j))
+            return { status: "unknown", reason: "meta_2xx_without_events_received" };
+        if (Number.isInteger(expectedEvents) && expectedEvents > 0 && Number.isInteger(j.events_received) && j.events_received === expectedEvents) {
             return { status: "accepted", ...(typeof j.fbtrace_id === "string" ? { platformRef: j.fbtrace_id } : {}) };
         }
-        return { status: "unknown", reason: "meta_2xx_without_events_received" };
+        return { status: "unknown", reason: "meta_events_received_mismatch" };
     }
     if (r.status >= 400 && r.status < 500 && r.status !== 429) {
         const err = metaError(r.text);
@@ -212,8 +229,13 @@ export function createMetaClient(config, options = {}) {
                 return bad;
             if (!frozenBodyMatches(batch))
                 return { status: "rejected", reason: "frozen_body_sha256_mismatch" };
+            // A batch with no countable events could never be confirmed (0 === 0 must not read as accepted):
+            // refused before any request, like a tampered body. buildMetaConversionRequest never builds one.
+            const expectedEvents = metaFrozenEventCount(batch);
+            if (expectedEvents === null || expectedEvents === 0)
+                return { status: "rejected", reason: "meta_frozen_batch_has_no_events" };
             const r = await httpRequest({ url: batch.endpoint, method: "POST", headers, body: batch.body, timeoutMs });
-            return classifyMetaConversion(r);
+            return classifyMetaConversion(r, expectedEvents);
         },
         async replaceAudience(advertiser, list, members, possiblyApplied) {
             const aud = audienceId(list);

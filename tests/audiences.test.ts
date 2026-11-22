@@ -105,19 +105,29 @@ describe.each(["META", "GOOGLE"] as const)("%s audiences", (platform) => {
     expect(out).toEqual({ status: "not_connected" });
     expect(fake.requests.length).toBe(before);
   });
+});
 
-  it("an empty target with an empty possibly-applied set still clears (never assumes the remote is empty)", async () => {
-    const h = harness(platform);
+// GD-2955 (audit 136): the two platforms differ here, so each gets its own test named for what it does.
+describe("an empty target with an empty possibly-applied set", () => {
+  it("GOOGLE: still clears (never assumes the remote is empty)", async () => {
+    const h = harness("GOOGLE");
     h.seed("A");
     const out = await h.client().replaceAudience(HOUSE, h.list, [], []);
-    if (platform === "GOOGLE") {
-      expect(out.status).toBe("accepted");
-      expect(h.remote()).toEqual([]);
-    } else {
-      // Meta can delete only what it can name; an empty set names nothing and the call is a no-op.
-      expect(out.status).toBe("accepted");
-      expect(fake.requestsOn("meta.users.delete").filter((r) => r.path.includes(h.remoteId))).toHaveLength(0);
-    }
+    expect(out.status).toBe("accepted");
+    expect(h.remote()).toEqual([]);
+    const ra = fake.requestsOn("google.removeAll").filter((r) => r.body.toString().includes(h.remoteId));
+    expect(ra).toHaveLength(1);
+    expect(JSON.parse(ra[0]!.body.toString())).not.toHaveProperty("removeAsOfTime");
+  });
+
+  it("META: an empty target with an empty possibly-applied set deletes nothing: the caller's set is the record of what may be applied", async () => {
+    const h = harness("META");
+    h.seed("A");
+    await h.client().replaceAudience(HOUSE, h.list, [], []);
+    // Meta can delete only what Rello can name, and an empty usersreplace is undocumented: A stays.
+    expect(h.remote()).toEqual(h.keys("A"));
+    expect(fake.requestsOn("meta.users.delete").filter((r) => r.path.includes(h.remoteId))).toHaveLength(0);
+    expect(fake.requestsOn("meta.usersreplace").filter((r) => r.path.includes(h.remoteId))).toHaveLength(0);
   });
 });
 

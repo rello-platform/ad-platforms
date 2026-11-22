@@ -6,7 +6,7 @@
 import { AD_AUDIENCE_LISTS, AD_CONVERSION_KINDS } from "./registries.js";
 import { createMetaClient, META_DEFAULT_API_BASE, META_DEFAULT_API_VERSION } from "./meta/client.js";
 import { createGoogleClient, GOOGLE_DATAMANAGER_DEFAULT_API_BASE } from "./google/client.js";
-import { serviceAccountTokenSource } from "./google/token.js";
+import { GoogleCredentialsError, serviceAccountTokenSource } from "./google/token.js";
 const val = (env, name) => {
     const v = env[name];
     return typeof v === "string" && v.trim() !== "" ? v.trim() : undefined;
@@ -74,8 +74,9 @@ export function createAdPlatformClient(platform, env, options = {}) {
         getAccessToken = serviceAccountTokenSource(credentials, { timeoutMs: options.timeoutMs });
     }
     catch (err) {
-        // The message names the missing field, never the JSON or the key.
-        console.error(`[ad-platforms] ADS_GOOGLE_CREDENTIALS_JSON unusable, Google is not connected: ${err instanceof Error ? err.message : "unknown"}`);
+        // GD-2954: a fixed code only (it names the missing field), never a message, the JSON or the key.
+        const code = err instanceof GoogleCredentialsError ? err.code : "google_credentials_unusable";
+        console.error(`[ad-platforms] ADS_GOOGLE_CREDENTIALS_JSON unusable, Google is not connected (${code})`);
         return notConnectedClient("GOOGLE");
     }
     return createGoogleClient({ getAccessToken, apiBase: cfg.google.apiBase, operatingAccountId: cfg.google.operatingAccountId, loginAccountId: cfg.google.loginAccountId, userListIds: cfg.google.userListIds }, options);

@@ -167,6 +167,22 @@ export function nextMidnightPacific(now: Date): string {
 
 const RETRY = new Set(["UNAVAILABLE", "DEADLINE_EXCEEDED", "INTERNAL", "UNKNOWN", "ABORTED"]);
 const FINAL = new Set(["INVALID_ARGUMENT", "PERMISSION_DENIED", "UNAUTHENTICATED", "NOT_FOUND", "FAILED_PRECONDITION"]);
+/**
+ * GD-2954: the gRPC canonical status codes. An error body's `status` reaches a reason only when it is
+ * one of these; anything else is platform text and the reason falls back to `google_http_<status>`.
+ */
+const CANONICAL = new Set([
+  "OK", "CANCELLED", "UNKNOWN", "INVALID_ARGUMENT", "DEADLINE_EXCEEDED", "NOT_FOUND", "ALREADY_EXISTS", "PERMISSION_DENIED",
+  "RESOURCE_EXHAUSTED", "FAILED_PRECONDITION", "ABORTED", "OUT_OF_RANGE", "UNIMPLEMENTED", "INTERNAL", "UNAVAILABLE", "DATA_LOSS", "UNAUTHENTICATED",
+]);
+
+/**
+ * GD-2954: a request-status error reason reaches a returned field or a reason only when it has the
+ * shape of a Data Manager ProcessingErrorReason enum name; any other text becomes UNRECOGNIZED_REASON.
+ */
+function safeGoogleErrorReason(reason: string): string {
+  return /^PROCESSING_ERROR_REASON_[A-Z0-9_]{1,80}$/.test(reason) ? reason : "UNRECOGNIZED_REASON";
+}
 
 /** The Google classes of §4.5 Rev 4 item 2. Exported for tests. */
 export function classifyGoogleResponse(r: HttpResult, now: Date): AdOutcome {
@@ -179,7 +195,8 @@ export function classifyGoogleResponse(r: HttpResult, now: Date): AdOutcome {
   if (r.status >= 200 && r.status < 300) {
     return j && typeof j.requestId === "string" && j.requestId ? { status: "accepted", requestId: j.requestId } : { status: "unknown", reason: "google_2xx_unparseable" };
   }
-  const status = typeof j?.error?.status === "string" ? j.error.status : r.status === 429 ? "RESOURCE_EXHAUSTED" : "";
+  const bodyStatus = typeof j?.error?.status === "string" && CANONICAL.has(j.error.status) ? j.error.status : "";
+  const status = bodyStatus || (r.status === 429 ? "RESOURCE_EXHAUSTED" : "");
   if (RETRY.has(status)) return { status: "retryable", reason: `google_${status}` };
   if (status === "RESOURCE_EXHAUSTED") {
     const info = (j?.error?.details ?? []).find((x) => String(x?.["@type"] ?? "").endsWith("google.rpc.ErrorInfo"));
@@ -195,20 +212,36 @@ export function classifyGoogleResponse(r: HttpResult, now: Date): AdOutcome {
 
 /** Maps a conversion batch's request status to an outcome (a repeated transactionId is `duplicate`, §4.5 Rev 2). */
 export function conversionOutcomeFromStatus(d: RequestStatusDetail): AdOutcome {
-  const onlyDuplicates = d.errorReasons.length > 0 && d.errorReasons.every((r) => r === "PROCESSING_ERROR_REASON_DUPLICATE_TRANSACTION_ID");
+  const reasons = (Array.isArray(d.errorReasons) ? d.errorReasons : []).map((r) => safeGoogleErrorReason(String(r)));
+  const onlyDuplicates = reasons.length > 0 && reasons.every((r) => r === "PROCESSING_ERROR_REASON_DUPLICATE_TRANSACTION_ID");
   switch (d.status) {
     case "SUCCESS":
       return { status: "accepted" };
     case "FAILED":
-      return onlyDuplicates ? { status: "duplicate" } : { status: "rejected", reason: `google_request_failed:${d.errorReasons.join(",") || "no_reason"}` };
+      return onlyDuplicates ? { status: "duplicate" } : { status: "rejected", reason: `google_request_failed:${reasons.join(",") || "no_reason"}` };
     case "PARTIAL_SUCCESS":
       // Some events failed. Resending the same body is safe under transactionId dedup, so it is unknown, not final.
-      return onlyDuplicates ? { status: "duplicate" } : { status: "unknown", reason: `google_partial_success:${d.errorReasons.join(",") || "no_reason"}` };
+      return onlyDuplicates ? { status: "duplicate" } : { status: "unknown", reason: `google_partial_success:${reasons.join(",") || "no_reason"}` };
     case "PROCESSING":
       return { status: "unknown", reason: "google_request_processing" };
     default:
       return { status: "unknown", reason: "google_request_status_unreadable" };
   }
+}
+
+const BUILTIN_ERRORS = [Error, TypeError, RangeError, SyntaxError, ReferenceError, URIError, EvalError, AggregateError] as const;
+
+/**
+ * The kind of a thrown value, from a fixed vocabulary: a built-in error constructor's name (matched by
+ * prototype, so a subclass that borrows a built-in name is not one), "Error subclass", or a typeof.
+ * A subclass's own name is never used: it is caller code and could be anything.
+ */
+function thrownKind(err: unknown): string {
+  if (err instanceof Error) {
+    const proto: unknown = Object.getPrototypeOf(err);
+    return BUILTIN_ERRORS.find((C) => C.prototype === proto)?.name ?? "Error subclass";
+  }
+  return err === null ? "null" : typeof err;
 }
 
 function chunk<T>(xs: T[], n: number): T[][] {
@@ -240,7 +273,9 @@ export function createGoogleClient(config: GoogleClientConfig, options: GoogleCl
       if (typeof t !== "string" || t.trim() === "") return { status: "retryable", reason: "google_token_empty" };
       return t;
     } catch (err) {
-      console.warn(`[ad-platforms/google] access token unavailable: ${err instanceof Error ? err.message : String(err)}`);
+      // GD-2954: the caller's token source may put anything in what it throws (a key, a token, a
+      // response body). Log a fixed code and the thrown value's kind only; never its text.
+      console.warn(`[ad-platforms/google] access token unavailable (google_token_unavailable) thrown=${thrownKind(err)}`);
       return { status: "retryable", reason: "google_token_unavailable" };
     }
   };
@@ -259,7 +294,7 @@ export function createGoogleClient(config: GoogleClientConfig, options: GoogleCl
     const statuses = per.map((p) => String((p as { requestStatus?: unknown })?.requestStatus ?? ""));
     const errorReasons = per.flatMap((p) => {
       const counts = (p as { errorInfo?: { errorCounts?: unknown } })?.errorInfo?.errorCounts;
-      return Array.isArray(counts) ? counts.map((c) => String((c as { reason?: unknown })?.reason ?? "")).filter(Boolean) : [];
+      return Array.isArray(counts) ? counts.map((c) => String((c as { reason?: unknown })?.reason ?? "")).filter(Boolean).map(safeGoogleErrorReason) : [];
     });
     let status: RequestStatus;
     if (statuses.includes("FAILED")) status = "FAILED";

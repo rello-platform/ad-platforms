@@ -11,6 +11,15 @@
 import * as http from "node:http";
 import * as https from "node:https";
 const MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
+/**
+ * GD-2954: a transport reason carries Node's error CODE (ECONNREFUSED, ECONNRESET,
+ * ERR_TLS_CERT_ALTNAME_INVALID, ...), never the error's message, which can carry hosts, ports or a
+ * peer certificate's names. A reason ends up in outcomes and in the caller's records.
+ */
+export function transportErrorCode(err) {
+    const code = typeof err === "object" && err !== null ? err.code : undefined;
+    return typeof code === "string" && /^[A-Z][A-Z0-9_]{0,63}$/.test(code) ? code : "ERROR";
+}
 export function httpRequest(req) {
     return new Promise((resolve) => {
         let url;
@@ -35,6 +44,8 @@ export function httpRequest(req) {
             headers["content-length"] = String(body.length);
         let connected = false;
         let settled = false;
+        let tooLarge = false;
+        const code = (err) => (tooLarge ? "RESPONSE_TOO_LARGE" : transportErrorCode(err));
         const done = (r) => {
             if (settled)
                 return;
@@ -49,13 +60,14 @@ export function httpRequest(req) {
             res.on("data", (c) => {
                 size += c.length;
                 if (size > MAX_RESPONSE_BYTES) {
+                    tooLarge = true;
                     cr.destroy(new Error("response_too_large"));
                     return;
                 }
                 chunks.push(c);
             });
             res.on("end", () => done({ kind: "response", status: res.statusCode ?? 0, text: Buffer.concat(chunks).toString("utf8") }));
-            res.on("error", (err) => done({ kind: "transport_error", written: true, reason: `response_error:${err.message}` }));
+            res.on("error", (err) => done({ kind: "transport_error", written: true, reason: `response_error:${code(err)}` }));
         });
         cr.on("socket", (socket) => {
             const ready = url.protocol === "https:" ? "secureConnect" : "connect";
@@ -66,7 +78,7 @@ export function httpRequest(req) {
             });
         });
         cr.on("error", (err) => {
-            done({ kind: "transport_error", written: connected, reason: connected ? `after_connect:${err.message}` : `before_write:${err.message}` });
+            done({ kind: "transport_error", written: connected, reason: connected ? `after_connect:${code(err)}` : `before_write:${code(err)}` });
         });
         const timer = setTimeout(() => {
             const wasConnected = connected;

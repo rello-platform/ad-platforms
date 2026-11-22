@@ -9,14 +9,25 @@ import { GOOGLE_DATAMANAGER_SCOPE } from "./client.js";
 const DEFAULT_TOKEN_URI = "https://oauth2.googleapis.com/token";
 /** Refresh this long before the token's stated expiry. */
 const EXPIRY_SKEW_MS = 60_000;
+/**
+ * Why a credentials JSON is unusable, as a fixed code (GD-2954): a caller logs `code`, never a message.
+ */
+export class GoogleCredentialsError extends Error {
+    code;
+    constructor(code, message) {
+        super(message);
+        this.code = code;
+        this.name = "GoogleCredentialsError";
+    }
+}
 function parseCredentials(json) {
     const o = (typeof json === "string" ? parseJsonSafe(json) : undefined);
     if (!o || typeof o !== "object")
-        throw new Error("Google service-account credentials are not valid JSON");
+        throw new GoogleCredentialsError("google_credentials_not_json", "Google service-account credentials are not valid JSON");
     if (typeof o.client_email !== "string" || o.client_email.trim() === "")
-        throw new Error("Google service-account credentials have no client_email");
+        throw new GoogleCredentialsError("google_credentials_no_client_email", "Google service-account credentials have no client_email");
     if (typeof o.private_key !== "string" || !o.private_key.includes("PRIVATE KEY"))
-        throw new Error("Google service-account credentials have no private_key");
+        throw new GoogleCredentialsError("google_credentials_no_private_key", "Google service-account credentials have no private_key");
     const tokenUri = typeof o.token_uri === "string" && o.token_uri.trim() !== "" ? o.token_uri.trim() : DEFAULT_TOKEN_URI;
     return { client_email: o.client_email.trim(), private_key: o.private_key, token_uri: tokenUri };
 }
