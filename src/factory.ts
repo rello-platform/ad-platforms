@@ -22,9 +22,13 @@ const val = (env: AdEnv, name: string): string | undefined => {
 };
 const digits = (v: string | undefined) => (v ? v.replace(/-/g, "") : undefined);
 
-/** House lists and the kinds the house may send: the registries' house/any scopes, never tenant. */
+/** House lists: the registry's house-scoped lists (§7.3 Rev 5 names RELLO_PROSPECTS and RELLO_CUSTOMERS). */
 const HOUSE_LISTS = Object.entries(AD_AUDIENCE_LISTS).filter(([, e]) => e.scope === "house").map(([k]) => k);
-const HOUSE_KINDS = Object.entries(AD_CONVERSION_KINDS as Record<string, { scope: string }>).filter(([, e]) => e.scope !== "tenant").map(([k]) => k);
+/**
+ * §7.3 Rev 5 names house conversion actions for SIGNUP and LEAD only. funded_loan is an any-scope
+ * kind, but the design gives the house no env name for it, so none is read here.
+ */
+const HOUSE_KINDS: string[] = (["signup", "lead"] as const).filter((k) => k in AD_CONVERSION_KINDS);
 
 function byKey(env: AdEnv, prefix: string, keys: string[]): Record<string, string> {
   const out: Record<string, string> = {};

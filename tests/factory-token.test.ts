@@ -137,6 +137,18 @@ describe("connected from the house env names", () => {
   });
 });
 
+describe("house env names are exactly §7.3 Rev 5's", () => {
+  it("reads conversion actions for SIGNUP and LEAD only", () => {
+    const cfg = readHouseAdConfig({
+      ADS_HOUSE_GOOGLE_CONVERSION_ACTION_SIGNUP: "a1",
+      ADS_HOUSE_GOOGLE_CONVERSION_ACTION_LEAD: "a2",
+      ADS_HOUSE_GOOGLE_CONVERSION_ACTION_FUNDED_LOAN: "a3",
+      ADS_HOUSE_GOOGLE_CONVERSION_ACTION_FUNDED_LOAN_RETRACT: "a4",
+    });
+    expect(cfg.google.conversionActionIds).toEqual({ signup: "a1", lead: "a2" });
+  });
+});
+
 describe("serviceAccountTokenSource", () => {
   it("asks for the datamanager scope, with a JWT the fake verifies", async () => {
     const get = serviceAccountTokenSource(sa.json);

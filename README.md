@@ -49,10 +49,10 @@ Audiences:
 |---|---|
 | `ADS_HOUSE_META_CAPI_TOKEN` | secret; absent or blank → Meta not_connected |
 | `ADS_HOUSE_META_DATASET_ID`, `ADS_HOUSE_META_AD_ACCOUNT_ID` | ids |
-| `ADS_HOUSE_META_AUDIENCE_RELLO_PROSPECTS`, `ADS_HOUSE_META_AUDIENCE_RELLO_CUSTOMERS` | Meta custom audience ids (**new names, not in the design's §7.3 table**) |
+| `ADS_HOUSE_META_AUDIENCE_RELLO_PROSPECTS`, `ADS_HOUSE_META_AUDIENCE_RELLO_CUSTOMERS` | Meta custom audience ids. **PROVISIONAL: not in the design's §7.3 Rev 5 table**, which names no source for a Meta audience id. Pending the KA's ruling; the client itself takes `audienceIds` as config. |
 | `ADS_GOOGLE_CREDENTIALS_JSON` | secret (service account); absent, blank or unusable → Google not_connected |
 | `ADS_HOUSE_GOOGLE_CUSTOMER_ID`, `ADS_HOUSE_GOOGLE_LOGIN_CUSTOMER_ID` | ids (hyphens removed) |
-| `ADS_HOUSE_GOOGLE_CONVERSION_ACTION_<KIND>` | per kind: SIGNUP, LEAD, FUNDED_LOAN, FUNDED_LOAN_RETRACT |
+| `ADS_HOUSE_GOOGLE_CONVERSION_ACTION_SIGNUP`, `…_LEAD` | conversion action ids (§7.3 Rev 5 names these two only) |
 | `ADS_HOUSE_GOOGLE_USER_LIST_RELLO_PROSPECTS`, `…_RELLO_CUSTOMERS` | Customer Match user list ids |
 | `ADS_META_API_BASE`, `ADS_GOOGLE_DATAMANAGER_API_BASE` | test overrides (the fake) |
 
