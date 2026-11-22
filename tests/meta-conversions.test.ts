@@ -1,0 +1,199 @@
+/**
+ * Meta Conversions API client against the fake (§4.5 Rev 3 item 3, Meta column).
+ * Meta: only a transport failure before the request was written is retryable; any 5xx, 429,
+ * timeout or reset after writing, or 2xx without events_received is UNKNOWN and never resent.
+ * GD-2953 (audit 136): a 2xx is accepted only when events_received is an integer EQUAL to the
+ * number of events in the frozen batch; any other value is UNKNOWN (never retryable, never resent).
+ */
+import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { createHash } from "node:crypto";
+import { startFakeAdServer, type FakeAdServer } from "../src/fake/index.js";
+import { buildMetaConversionRequest, createMetaClient, freezeBatch, type FrozenBatch } from "../src/index.js";
+import { deadBase } from "./helpers.js";
+
+const HOUSE = { tenantId: "tenant_rello_growth" };
+const TOKEN = "meta-test-token-xyz";
+let fake: FakeAdServer;
+
+beforeAll(async () => {
+  fake = await startFakeAdServer();
+});
+afterAll(async () => {
+  await fake.close();
+});
+
+function batch(id: string, datasetId: string, base = fake.metaBase): FrozenBatch {
+  const req = buildMetaConversionRequest({ apiBase: base, apiVersion: "v21.0", datasetId }, [
+    {
+      eventName: "CompleteRegistration",
+      eventTime: new Date("2026-11-22T20:00:00Z"),
+      eventId: "rello:signup:tenant_abc",
+      email: "Owner@Example.com",
+      phone: "(801) 555-0142",
+      externalId: { tenantId: HOUSE.tenantId, subjectId: "user_1" },
+      fbc: "fb.1.1554763741205.AbCdEf",
+      value: { amount: 99, currency: "USD" },
+    },
+  ]);
+  return freezeBatch({ id, ...req });
+}
+
+const client = (base?: string) => createMetaClient({ accessToken: TOKEN, ...(base ? { apiBase: base } : {}) }, { timeoutMs: 400 });
+
+describe("Meta conversions", () => {
+  it("[cell META.conversions] accepted; the frozen body arrives byte for byte; the token is only in a header", async () => {
+    const b = batch("b1", "ds-accept");
+    const before = fake.requestsOn("meta.events").length;
+    const out = await client().sendConversionBatch(HOUSE, b);
+    expect(out.status).toBe("accepted");
+    const reqs = fake.requestsOn("meta.events");
+    expect(reqs.length).toBe(before + 1);
+    const got = reqs[reqs.length - 1]!;
+    expect(got.path).toBe("/meta/v21.0/ds-accept/events");
+    expect(Buffer.compare(got.body, Buffer.from(b.body))).toBe(0);
+    expect(createHash("sha256").update(got.body).digest("hex")).toBe(b.bodySha256);
+    expect(got.headers.authorization).toBe(`Bearer ${TOKEN}`);
+    expect(got.body.toString()).not.toContain(TOKEN);
+    expect(JSON.stringify(got.query)).not.toContain(TOKEN);
+    expect(fake.meta.events("ds-accept")).toHaveLength(1);
+  });
+
+  it("the event carries hashed em/ph/external_id, unhashed fbc, and no raw identifier", () => {
+    const text = new TextDecoder().decode(batch("b2", "ds").body);
+    const ev = (JSON.parse(text) as { data: Array<Record<string, unknown>> }).data[0]!;
+    const ud = ev.user_data as Record<string, unknown>;
+    expect(ev.event_name).toBe("CompleteRegistration");
+    expect(ev.event_time).toBe(Math.floor(Date.parse("2026-11-22T20:00:00Z") / 1000));
+    expect(ev.event_id).toBe("rello:signup:tenant_abc");
+    expect(ev.action_source).toBe("website");
+    expect(ud.em).toEqual([createHash("sha256").update("owner@example.com").digest("hex")]);
+    expect(ud.ph).toEqual([createHash("sha256").update("18015550142").digest("hex")]);
+    expect(ud.external_id).toEqual([createHash("sha256").update("tenant_rello_growth:user_1").digest("hex")]);
+    expect(ud.fbc).toBe("fb.1.1554763741205.AbCdEf");
+    expect(ev.custom_data).toEqual({ value: 99, currency: "USD" });
+    expect(text).not.toMatch(/owner@example\.com|555-0142|user_1/i);
+  });
+
+  it("a timeout with no answer is UNKNOWN, never rejected or accepted", async () => {
+    fake.next("meta.events", { kind: "hang" });
+    const out = await client().sendConversionBatch(HOUSE, batch("b3", "ds-hang"));
+    expect(out.status).toBe("unknown");
+  });
+
+  it("applied but the response was lost is UNKNOWN; the fake kept the events", async () => {
+    fake.next("meta.events", { kind: "drop" });
+    const out = await client().sendConversionBatch(HOUSE, batch("b4", "ds-drop"));
+    expect(out.status).toBe("unknown");
+    expect(fake.meta.events("ds-drop")).toHaveLength(1);
+  });
+
+  it("429 and 503 are UNKNOWN, and the client sends once (no resend)", async () => {
+    for (const status of [429, 503]) {
+      const ds = `ds-${status}`;
+      fake.next("meta.events", { kind: "status", status, body: { error: { code: 4, message: "busy" } } });
+      const before = fake.requestsOn("meta.events").length;
+      const out = await client().sendConversionBatch(HOUSE, batch(`b-${status}`, ds));
+      expect(out.status).toBe("unknown");
+      expect(fake.requestsOn("meta.events").length).toBe(before + 1);
+    }
+  });
+
+  it("a 4xx with a parameter or token code (100, 190) is REJECTED", async () => {
+    for (const code of [100, 190]) {
+      fake.next("meta.events", { kind: "status", status: 400, body: { error: { code, message: "bad" } } });
+      const out = await client().sendConversionBatch(HOUSE, batch(`b-r${code}`, "ds-rej"));
+      expect(out).toMatchObject({ status: "rejected" });
+    }
+  });
+
+  it("a 4xx with a code that is not a parameter/token/permission code is UNKNOWN", async () => {
+    fake.next("meta.events", { kind: "status", status: 400, body: { error: { code: 1, message: "unknown error" } } });
+    expect((await client().sendConversionBatch(HOUSE, batch("b-u1", "ds-u"))).status).toBe("unknown");
+  });
+
+  it("a 2xx without events_received is UNKNOWN", async () => {
+    fake.next("meta.events", { kind: "status", status: 200, body: { messages: [] } });
+    expect((await client().sendConversionBatch(HOUSE, batch("b5", "ds-noer"))).status).toBe("unknown");
+  });
+
+  it("a transport failure before the request was written is RETRYABLE", async () => {
+    const dead = await deadBase();
+    const out = await client(dead).sendConversionBatch(HOUSE, batch("b6", "ds-dead", dead));
+    expect(out.status).toBe("retryable");
+  });
+
+  it("a batch whose body no longer matches its sha256 is REJECTED with 0 requests", async () => {
+    const b = batch("b7", "ds-tamper");
+    const before = fake.requests.length;
+    const out = await client().sendConversionBatch(HOUSE, { ...b, body: new TextEncoder().encode("{}") });
+    expect(out).toMatchObject({ status: "rejected" });
+    expect(fake.requests.length).toBe(before);
+  });
+});
+
+/** A frozen batch of exactly three events (n = 3), so n-1, n+1 and "3" are distinct cases. */
+function batch3(id: string, datasetId: string): FrozenBatch {
+  const req = buildMetaConversionRequest(
+    { apiBase: fake.metaBase, apiVersion: "v21.0", datasetId },
+    [1, 2, 3].map((k) => ({ eventName: "Lead", eventTime: new Date("2026-11-22T20:00:00Z"), eventId: `rello:lead:${id}:${k}`, email: `p${k}@example.com` })),
+  );
+  return freezeBatch({ id, ...req });
+}
+
+describe("Meta conversions: events_received must equal the frozen batch's event count (GD-2953)", () => {
+  const N = 3;
+  const mismatches: Array<[string, unknown]> = [
+    ["0", 0],
+    ["-1", -1],
+    ["1.5", 1.5],
+    ["n-1", N - 1],
+    ["n+1", N + 1],
+    ['the string "3"', "3"],
+    ["null", null],
+  ];
+
+  it.each(mismatches)("a 200 with events_received %s is UNKNOWN (meta_events_received_mismatch), sent once, never accepted", async (label, value) => {
+    const ds = `ds-er-${label.replace(/[^a-z0-9]+/gi, "_")}`;
+    fake.next("meta.events", { kind: "status", status: 200, body: { events_received: value, messages: [], fbtrace_id: "fake-trace-x" } });
+    const before = fake.requestsOn("meta.events").length;
+    const out = await client().sendConversionBatch(HOUSE, batch3(`b-er-${label}`, ds));
+    expect(out).toEqual({ status: "unknown", reason: "meta_events_received_mismatch" });
+    expect(fake.requestsOn("meta.events").length).toBe(before + 1);
+    expect(fake.meta.events(ds)).toHaveLength(0);
+  });
+
+  it("a 200 with events_received missing is UNKNOWN (meta_2xx_without_events_received)", async () => {
+    fake.next("meta.events", { kind: "status", status: 200, body: { messages: [], fbtrace_id: "fake-trace-y" } });
+    const out = await client().sendConversionBatch(HOUSE, batch3("b-er-missing", "ds-er-missing"));
+    expect(out).toEqual({ status: "unknown", reason: "meta_2xx_without_events_received" });
+    expect(fake.meta.events("ds-er-missing")).toHaveLength(0);
+  });
+
+  it("events_received equal to n (the fake applied all three) is ACCEPTED", async () => {
+    const out = await client().sendConversionBatch(HOUSE, batch3("b-er-n", "ds-er-n"));
+    expect(out.status).toBe("accepted");
+    expect(fake.meta.events("ds-er-n")).toHaveLength(N);
+  });
+
+  it("across every mismatch case, 0 were accepted and the fake kept 0 events", async () => {
+    let accepted = 0;
+    for (const [label, value] of mismatches) {
+      const ds = `ds-er-sweep-${label.replace(/[^a-z0-9]+/gi, "_")}`;
+      fake.next("meta.events", { kind: "status", status: 200, body: { events_received: value } });
+      const out = await client().sendConversionBatch(HOUSE, batch3(`b-sweep-${label}`, ds));
+      if (out.status === "accepted") accepted++;
+      expect(fake.meta.events(ds)).toHaveLength(0);
+    }
+    expect(accepted).toBe(0);
+  });
+
+  it("a frozen batch with no events is REJECTED before any request (0 === 0 must never read as accepted)", async () => {
+    for (const [id, request] of [["b-empty-data", { data: [] }], ["b-no-data", {}]] as const) {
+      const b = freezeBatch({ id, endpoint: `${fake.metaBase}/v21.0/ds-empty/events`, apiVersion: "v21.0", request });
+      const before = fake.requests.length;
+      const out = await client().sendConversionBatch(HOUSE, b);
+      expect(out).toEqual({ status: "rejected", reason: "meta_frozen_batch_has_no_events" });
+      expect(fake.requests.length).toBe(before);
+    }
+  });
+});
