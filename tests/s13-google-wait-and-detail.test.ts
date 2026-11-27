@@ -134,7 +134,7 @@ function refusal(marker: string) {
         {
           "@type": "type.googleapis.com/google.rpc.BadRequest",
           fieldViolations: [
-            { field: "destinations[0].productDestinationId", reason: "INVALID_PRODUCT_DESTINATION_ID", description: `User list 9876543210 not found for ${marker}@example.com` },
+            { field: "destinations[0].productDestinationId", reason: "INVALID_CONVERSION_ACTION_ID", description: `User list 9876543210 not found for ${marker}@example.com` },
             { field: `not a path ${marker}`, reason: `lower ${marker}`, description: "" },
           ],
         },
@@ -160,7 +160,7 @@ describe("3. the detail: kept, masked", () => {
         status: "INVALID_ARGUMENT",
         message: "Request contains an invalid argument. Customer <id> list <id> for <email>, token ya29.<token>",
         fieldViolations: [
-          { field: "destinations[0].productDestinationId", reason: "INVALID_PRODUCT_DESTINATION_ID", description: "User list <id> not found for <email>" },
+          { field: "destinations[0].productDestinationId", reason: "INVALID_CONVERSION_ACTION_ID", description: "User list <id> not found for <email>" },
           { field: "<unrecognized_field>" },
         ],
         errorInfo: { reason: "INVALID_ARGUMENT", domain: "datamanager.googleapis.com" },

@@ -11,8 +11,10 @@
  *   message           Google's `error.message`, MASKED and cut to 300 characters;
  *   fieldViolations   from a `google.rpc.BadRequest` detail, at most 10: `field` only when it has a field-path shape
  *                     (`destinations[0].productDestinationId`), `reason` only when it is an UPPER_SNAKE name,
- *                     `description` masked and cut like the message;
- *   errorInfo         from a `google.rpc.ErrorInfo` detail: `reason` (UPPER_SNAKE) and `domain` (a host name) only.
+ *                     `description` masked and cut like the message; a `reason` is kept only when UPPER_SNAKE and either
+ *                     under 24 characters or a listed name, else `<token>` (GD-3571);
+ *   errorInfo         from a `google.rpc.ErrorInfo` detail: `reason` (as above) and `domain` (only a listed Google error domain,
+ *                     `known-domains.ts`, else `<unrecognized_domain>`; GD-3572) only.
  *
  * MASKED means control characters are dropped, then EVERY run of 24+ characters from the token alphabet
  * (`A-Z a-z 0-9 _ - + / =`) is replaced whole, first, before any other rule can split it (AUDIT 163, GD-3505): an exact
@@ -35,6 +37,17 @@ export declare const FIELD_VIOLATIONS_MAX = 10;
 export declare const FIELD_SEGMENT_MAX = 40;
 /** The field path when it is shaped like one and every segment is plausible; otherwise `<unrecognized_field>`. */
 export declare function maskFieldPath(v: unknown): string;
+/**
+ * A Google error `reason` (a BadRequest field violation's, or an ErrorInfo's): kept only when it is UPPER_SNAKE AND either shorter
+ * than 24 characters or exactly a listed Google name, the same rule the text has (GD-3571). An UPPER_SNAKE value that is neither
+ * reads `<token>`, so the key stays and a reader sees a reason existed. A value that is not UPPER_SNAKE text is left out.
+ */
+export declare function maskReason(v: unknown): string | undefined;
+/**
+ * An ErrorInfo `domain`: kept only when it is exactly a listed Google error domain (GD-3572, `known-domains.ts`); any other
+ * non-blank text reads `<unrecognized_domain>`; blank or not text is left out.
+ */
+export declare function maskDomain(v: unknown): string | undefined;
 /** Masks identifiers and secrets in platform text, then cuts it. Never throws; a non-string gives undefined. */
 export declare function maskPlatformText(v: unknown): string | undefined;
 /**

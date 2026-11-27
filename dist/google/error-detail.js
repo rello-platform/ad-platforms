@@ -11,8 +11,10 @@
  *   message           Google's `error.message`, MASKED and cut to 300 characters;
  *   fieldViolations   from a `google.rpc.BadRequest` detail, at most 10: `field` only when it has a field-path shape
  *                     (`destinations[0].productDestinationId`), `reason` only when it is an UPPER_SNAKE name,
- *                     `description` masked and cut like the message;
- *   errorInfo         from a `google.rpc.ErrorInfo` detail: `reason` (UPPER_SNAKE) and `domain` (a host name) only.
+ *                     `description` masked and cut like the message; a `reason` is kept only when UPPER_SNAKE and either
+ *                     under 24 characters or a listed name, else `<token>` (GD-3571);
+ *   errorInfo         from a `google.rpc.ErrorInfo` detail: `reason` (as above) and `domain` (only a listed Google error domain,
+ *                     `known-domains.ts`, else `<unrecognized_domain>`; GD-3572) only.
  *
  * MASKED means control characters are dropped, then EVERY run of 24+ characters from the token alphabet
  * (`A-Z a-z 0-9 _ - + / =`) is replaced whole, first, before any other rule can split it (AUDIT 163, GD-3505): an exact
@@ -28,6 +30,7 @@
  * Google echoes back therefore never reaches a returned field. The outcome's `reason` stays the fixed code: logs that
  * print `reason` are unchanged. `detail` is the only place platform text goes, and only in this masked form.
  */
+import { GOOGLE_KNOWN_DOMAINS } from "./known-domains.js";
 import { GOOGLE_KNOWN_NAMES } from "./known-names.js";
 export const PLATFORM_TEXT_MAX = 300;
 export const FIELD_VIOLATIONS_MAX = 10;
@@ -68,7 +71,25 @@ export function maskFieldPath(v) {
         return "<unrecognized_field>";
     return v.split(".").every((seg) => plausibleSegment(seg.replace(/\[\d{1,6}\]$/, ""))) ? v : "<unrecognized_field>";
 }
-const DOMAIN = /^[a-z0-9][a-z0-9.-]{0,99}$/;
+/**
+ * A Google error `reason` (a BadRequest field violation's, or an ErrorInfo's): kept only when it is UPPER_SNAKE AND either shorter
+ * than 24 characters or exactly a listed Google name, the same rule the text has (GD-3571). An UPPER_SNAKE value that is neither
+ * reads `<token>`, so the key stays and a reader sees a reason existed. A value that is not UPPER_SNAKE text is left out.
+ */
+export function maskReason(v) {
+    if (typeof v !== "string" || !UPPER_SNAKE.test(v))
+        return undefined;
+    return v.length < 24 || GOOGLE_KNOWN_NAMES.has(v) ? v : "<token>";
+}
+/**
+ * An ErrorInfo `domain`: kept only when it is exactly a listed Google error domain (GD-3572, `known-domains.ts`); any other
+ * non-blank text reads `<unrecognized_domain>`; blank or not text is left out.
+ */
+export function maskDomain(v) {
+    if (typeof v !== "string" || v === "")
+        return undefined;
+    return GOOGLE_KNOWN_DOMAINS.has(v) ? v : "<unrecognized_domain>";
+}
 /** Masks identifiers and secrets in platform text, then cuts it. Never throws; a non-string gives undefined. */
 export function maskPlatformText(v) {
     if (typeof v !== "string")
@@ -116,8 +137,9 @@ export function googleErrorDetail(httpStatus, body, canonical) {
                     break;
                 const f = fv;
                 const v = { field: maskFieldPath(f.field) };
-                if (typeof f.reason === "string" && UPPER_SNAKE.test(f.reason))
-                    v.reason = f.reason;
+                const reason = maskReason(f.reason);
+                if (reason !== undefined)
+                    v.reason = reason;
                 const description = maskPlatformText(f.description);
                 if (description)
                     v.description = description;
@@ -129,10 +151,12 @@ export function googleErrorDetail(httpStatus, body, canonical) {
         const info = details.find((d) => isType(d, "google.rpc.ErrorInfo"));
         if (info) {
             const ei = {};
-            if (typeof info.reason === "string" && UPPER_SNAKE.test(info.reason))
-                ei.reason = info.reason;
-            if (typeof info.domain === "string" && DOMAIN.test(info.domain))
-                ei.domain = info.domain;
+            const reason = maskReason(info.reason);
+            if (reason !== undefined)
+                ei.reason = reason;
+            const domain = maskDomain(info.domain);
+            if (domain !== undefined)
+                ei.domain = domain;
             if (ei.reason || ei.domain)
                 out.errorInfo = ei;
         }
