@@ -56,11 +56,13 @@ Audiences:
 
 A Google answer that is an error (`rejected`, `retryable`, `unknown`, or `partial` after a later batch) carries
 `detail` (`PlatformErrorDetail`, built only in `src/google/error-detail.ts`): `httpStatus`; `status` when it is a gRPC
-canonical code; `message`, masked; up to 10 `fieldViolations` (`field` only when it is a field path, else
-`<unrecognized_field>`; `reason` only when UPPER_SNAKE; `description` masked); `errorInfo` `reason` / `domain`. Masked:
-every e-mail, UUID, opaque token (24+ characters mixing letters and digits), hex run of 16+, phone-like run and digit
-run of 6+ is replaced by `<email>` / `<id>` / `<token>` / `<hex>`, control characters are dropped, then the text is cut
-to 300 characters. `reason` is unchanged (a fixed code), so a log line printing `reason` carries no platform text.
+canonical code; `message`, masked; up to 10 `fieldViolations` (`field` only when it is a field path whose every segment
+is a plausible field name: at most 40 characters and no 16+ run mixing letters and digits; else `<unrecognized_field>`;
+`reason` only when UPPER_SNAKE; `description` masked); `errorInfo` `reason` / `domain`. Masked: control characters are
+dropped; then every run of 24+ characters from `A-Z a-z 0-9 _ - + / =` is replaced whole, before any other rule (an
+exact UUID `<id>`, all hex `<hex>`, anything else `<token>`, letters only included; Google's snake_case, UPPER_SNAKE and
+camelCase names stay readable); then every e-mail, hex run of 16+, phone-like run and digit run of 6+ becomes `<email>` /
+`<hex>` / `<id>`; then the text is cut to 300 characters. `reason` is unchanged (a fixed code), so a log line printing `reason` carries no platform text.
 
 ## Env names (`createAdPlatformClient`, `readHouseAdConfig`)
 
