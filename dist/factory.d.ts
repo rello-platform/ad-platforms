@@ -19,10 +19,16 @@ export interface HouseAdConfig {
 /** The non-secret house ids. Never returns a token or the credentials JSON. */
 export declare function readHouseAdConfig(env: AdEnv): HouseAdConfig;
 export declare function notConnectedClient(platform: Platform): AdPlatformClient;
-export declare function createAdPlatformClient(platform: Platform, env: AdEnv, options?: {
+/**
+ * v0.2.0: `options.sleep` is REQUIRED (it was optional and defaulted to a plain timer). Both clients wait between
+ * status reads (Google 30 min, Meta 30 s); inside a Trigger.dev task that wait must be `wait.for`, or it counts
+ * against maxDuration. A script passes `realSleep` on purpose.
+ */
+export interface AdPlatformClientOptions {
     timeoutMs?: number;
-    sleep?: Sleep;
+    sleep: Sleep;
     statusPollMs?: number;
     statusMaxReads?: number;
-}): AdPlatformClient;
+}
+export declare function createAdPlatformClient(platform: Platform, env: AdEnv, options: AdPlatformClientOptions): AdPlatformClient;
 //# sourceMappingURL=factory.d.ts.map

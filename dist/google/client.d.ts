@@ -24,7 +24,12 @@ export interface GoogleClientOptions {
     /** Wait before each status read. Google advises waiting before the first check; tests pass 0. */
     statusPollMs?: number;
     statusMaxReads?: number;
-    sleep?: Sleep;
+    /**
+     * v0.2.0: REQUIRED. How the client waits `statusPollMs` (30 min by default) before each status read. In a
+     * Trigger.dev task pass `wait.for`: a plain timer there counts against maxDuration and the run is killed before the
+     * first read (S13, Agent 2 prompt 2137 blocker 3). There is no default, so no caller falls into a plain sleep.
+     */
+    sleep: Sleep;
     now?: () => Date;
 }
 export interface GoogleConversionInput {
@@ -68,5 +73,5 @@ export declare function nextMidnightPacific(now: Date): string;
 export declare function classifyGoogleResponse(r: HttpResult, now: Date): AdOutcome;
 /** Maps a conversion batch's request status to an outcome (a repeated transactionId is `duplicate`, §4.5 Rev 2). */
 export declare function conversionOutcomeFromStatus(d: RequestStatusDetail): AdOutcome;
-export declare function createGoogleClient(config: GoogleClientConfig, options?: GoogleClientOptions): GoogleAdPlatformClient;
+export declare function createGoogleClient(config: GoogleClientConfig, options: GoogleClientOptions): GoogleAdPlatformClient;
 //# sourceMappingURL=client.d.ts.map

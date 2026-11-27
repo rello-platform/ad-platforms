@@ -49,7 +49,7 @@ describe("not connected: 0 requests", () => {
     it(`${platform}: no credentials → every operation is not_connected and the fake sees 0 requests`, async () => {
       const env = { ADS_META_API_BASE: fake.metaBase, ADS_GOOGLE_DATAMANAGER_API_BASE: fake.googleBase };
       const before = fake.requests.length;
-      const outs = await allFour(createAdPlatformClient(platform, env), platform);
+      const outs = await allFour(createAdPlatformClient(platform, env, { sleep: noSleep }), platform);
       expect(outs).toEqual([{ status: "not_connected" }, { status: "not_connected" }, { status: "not_connected" }, { status: "not_connected" }]);
       expect(fake.requests.length).toBe(before);
     });
@@ -77,7 +77,7 @@ describe("not connected: 0 requests", () => {
 
   it("an empty-string credential is the same as a missing one", async () => {
     const before = fake.requests.length;
-    const outs = await allFour(createAdPlatformClient("META", { ADS_HOUSE_META_CAPI_TOKEN: "  ", ADS_META_API_BASE: fake.metaBase }), "META");
+    const outs = await allFour(createAdPlatformClient("META", { ADS_HOUSE_META_CAPI_TOKEN: "  ", ADS_META_API_BASE: fake.metaBase }, { sleep: noSleep }), "META");
     expect(outs.every((o) => o.status === "not_connected")).toBe(true);
     expect(fake.requests.length).toBe(before);
   });

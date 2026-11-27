@@ -41,21 +41,47 @@ export type AdOutcome = {
 } | {
     status: "rejected";
     reason: string;
+    detail?: PlatformErrorDetail;
 } | {
     status: "retryable";
     reason: string;
     notBefore?: string;
+    detail?: PlatformErrorDetail;
 } | {
     status: "unknown";
     reason: string;
+    detail?: PlatformErrorDetail;
 } | {
     status: "partial";
     done: number;
     failed: number;
     reason: string;
+    detail?: PlatformErrorDetail;
 } | {
     status: "not_connected";
 };
+/**
+ * v0.2.0 (S13): what a platform said when it answered a request with an error, MASKED (src/google/error-detail.ts).
+ * `reason` stays a fixed code; this is the only field that carries platform text, and never an address, id or token.
+ * Google only in v0.2.0.
+ */
+export interface PlatformErrorDetail {
+    httpStatus: number;
+    /** A gRPC canonical code, or absent. */
+    status?: string;
+    /** Masked, at most 300 characters. */
+    message?: string;
+    /** At most 10. `field` is a field path or "<unrecognized_field>"; `reason` an UPPER_SNAKE name; `description` masked. */
+    fieldViolations?: Array<{
+        field: string;
+        reason?: string;
+        description?: string;
+    }>;
+    errorInfo?: {
+        reason?: string;
+        domain?: string;
+    };
+}
 export type RequestStatus = "PROCESSING" | "SUCCESS" | "FAILED" | "PARTIAL_SUCCESS" | "UNREADABLE";
 export interface AdPlatformClient {
     platform: Platform;
@@ -67,7 +93,11 @@ export interface AdPlatformClient {
     /** Google only. */
     requestStatus?(advertiser: Advertiser, requestId: string): Promise<RequestStatus>;
 }
-/** Injected so a Trigger.dev task can pass `wait.for`, and tests can pass a no-op. */
+/**
+ * Injected so a Trigger.dev task can pass `wait.for` (a checkpointed wait: not compute time, so it never counts against
+ * the task's maxDuration), and tests can pass a no-op. v0.2.0: REQUIRED for a Google client (its status waits are
+ * 30 minutes); a caller with no task (a script) passes `realSleep` on purpose.
+ */
 export type Sleep = (ms: number) => Promise<void>;
 export declare const realSleep: Sleep;
 //# sourceMappingURL=types.d.ts.map

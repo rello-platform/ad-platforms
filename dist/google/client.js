@@ -14,7 +14,7 @@ import { frozenBodyMatches } from "../jcs.js";
 import { normalizeEmail, normalizePhone, sha256Hex } from "../normalize.js";
 import { httpRequest, parseJsonSafe } from "../http.js";
 import { GOOGLE_PROCESSING_ERROR_REASONS } from "./processing-error-reasons.js";
-import { realSleep, } from "../types.js";
+import { googleErrorDetail } from "./error-detail.js";
 export const GOOGLE_DATAMANAGER_DEFAULT_API_BASE = "https://datamanager.googleapis.com";
 export const GOOGLE_DATAMANAGER_API_VERSION = "v1";
 export const GOOGLE_DATAMANAGER_SCOPE = "https://www.googleapis.com/auth/datamanager";
@@ -143,23 +143,25 @@ export function classifyGoogleResponse(r, now) {
     if (r.status >= 200 && r.status < 300) {
         return j && typeof j.requestId === "string" && j.requestId ? { status: "accepted", requestId: j.requestId } : { status: "unknown", reason: "google_2xx_unparseable" };
     }
+    // v0.2.0 (S13): what Google said, masked (src/google/error-detail.ts). The reason below stays a fixed code.
+    const detail = googleErrorDetail(r.status, j, CANONICAL);
     const bodyStatus = typeof j?.error?.status === "string" && CANONICAL.has(j.error.status) ? j.error.status : "";
     const status = bodyStatus || (r.status === 429 ? "RESOURCE_EXHAUSTED" : "");
     if (RETRY.has(status))
-        return { status: "retryable", reason: `google_${status}` };
+        return { status: "retryable", reason: `google_${status}`, detail };
     if (status === "RESOURCE_EXHAUSTED") {
         const info = (j?.error?.details ?? []).find((x) => String(x?.["@type"] ?? "").endsWith("google.rpc.ErrorInfo"));
         const limit = info?.metadata?.quota_limit;
         if (limit === "IngestionMutateRequestsPerMinutePerProject")
-            return { status: "retryable", reason: "quota_per_minute" };
+            return { status: "retryable", reason: "quota_per_minute", detail };
         const notBefore = nextMidnightPacific(now);
         if (limit === "IngestionMutateRequestsPerDayPerProject")
-            return { status: "retryable", reason: "quota_daily", notBefore };
-        return { status: "retryable", reason: "quota_unclassified", notBefore };
+            return { status: "retryable", reason: "quota_daily", notBefore, detail };
+        return { status: "retryable", reason: "quota_unclassified", notBefore, detail };
     }
     if (FINAL.has(status))
-        return { status: "rejected", reason: `google_${status}` };
-    return { status: "unknown", reason: status ? `google_${status}` : `google_http_${r.status}` };
+        return { status: "rejected", reason: `google_${status}`, detail };
+    return { status: "unknown", reason: status ? `google_${status}` : `google_http_${r.status}`, detail };
 }
 /** Maps a conversion batch's request status to an outcome (a repeated transactionId is `duplicate`, §4.5 Rev 2). */
 export function conversionOutcomeFromStatus(d) {
@@ -198,13 +200,16 @@ function chunk(xs, n) {
         out.push(xs.slice(i, i + n));
     return out;
 }
-export function createGoogleClient(config, options = {}) {
+export function createGoogleClient(config, options) {
+    // v0.2.0: no default wait. A JavaScript caller (no type check) that passes none is told so at once, not 30 min in.
+    if (typeof options?.sleep !== "function")
+        throw new TypeError("createGoogleClient: options.sleep is required (in a Trigger.dev task, wait.for)");
     const base = `${trimSlash(config.apiBase ?? GOOGLE_DATAMANAGER_DEFAULT_API_BASE)}/${GOOGLE_DATAMANAGER_API_VERSION}`;
     const timeoutMs = options.timeoutMs ?? 30_000;
     const batchSize = Math.min(Math.max(1, Math.floor(options.batchSize ?? GOOGLE_AUDIENCE_MEMBERS_PER_REQUEST_LIMIT)), GOOGLE_AUDIENCE_MEMBERS_PER_REQUEST_LIMIT);
     const statusPollMs = options.statusPollMs ?? 30 * 60_000;
     const statusMaxReads = Math.max(1, options.statusMaxReads ?? 12);
-    const sleep = options.sleep ?? realSleep;
+    const sleep = options.sleep;
     const now = options.now ?? (() => new Date());
     const listId = (list) => {
         const id = config.userListIds?.[list];
@@ -252,12 +257,18 @@ export function createGoogleClient(config, options = {}) {
             status = "UNREADABLE";
         return { status, errorReasons };
     };
-    /** Reads a request's status until it is terminal, or the reads run out (PROCESSING). */
-    const settle = async (requestId, tok) => {
+    /**
+     * Reads a request's status until it is terminal, or the reads run out (PROCESSING / UNREADABLE). v0.2.0: a token is
+     * asked for before EVERY read: the reads span up to statusMaxReads × statusPollMs (6 h by default) and a token lives
+     * 1 h. The source caches until expiry, so this mints only when the old one has run out. A token that can't be had
+     * makes that read UNREADABLE, never a pass.
+     */
+    const settle = async (requestId) => {
         let last = "PROCESSING";
         for (let i = 0; i < statusMaxReads; i++) {
             await sleep(statusPollMs);
-            last = (await statusDetail(requestId, tok)).status;
+            const tok = await token();
+            last = typeof tok === "string" ? (await statusDetail(requestId, tok)).status : "UNREADABLE";
             if (last === "SUCCESS" || last === "FAILED" || last === "PARTIAL_SUCCESS")
                 return last;
         }
@@ -280,11 +291,17 @@ export function createGoogleClient(config, options = {}) {
                 body.consent = GRANTED;
                 body.termsOfService = { customerMatchTermsOfServiceStatus: "ACCEPTED" };
             }
-            const sent = await post(op, body, tok);
+            // The write's own token is fresh for each batch too: an earlier batch's status reads can outlast it.
+            const t = i === 0 ? tok : await token();
+            if (typeof t !== "string")
+                return { status: "partial", done, failed: batches.length - done, reason: t.status === "retryable" || t.status === "unknown" ? t.reason : "google_token_unavailable" };
+            const sent = await post(op, body, t);
             if (sent.status !== "accepted" || !sent.requestId) {
-                return i === 0 ? sent : { status: "partial", done, failed: batches.length - done, reason: "reason" in sent ? sent.reason : "google_write_failed" };
+                return i === 0
+                    ? sent
+                    : { status: "partial", done, failed: batches.length - done, reason: "reason" in sent ? sent.reason : "google_write_failed", ...("detail" in sent && sent.detail ? { detail: sent.detail } : {}) };
             }
-            const st = await settle(sent.requestId, tok);
+            const st = await settle(sent.requestId);
             if (st === "SUCCESS") {
                 done++;
                 continue;
@@ -295,11 +312,15 @@ export function createGoogleClient(config, options = {}) {
         }
         return { status: "accepted" };
     };
-    const removeAll = async (list, tok, removeAsOfTime) => {
+    const removeAll = async (list, removeAsOfTime) => {
+        // A fresh token: after an ingest's status reads, the one minted before it may have expired.
+        const tok = await token();
+        if (typeof tok !== "string")
+            return tok;
         const sent = await post("audienceMembers:removeAll", { destinations: [destination(config, list)], ...(removeAsOfTime ? { removeAsOfTime } : {}) }, tok);
         if (sent.status !== "accepted" || !sent.requestId)
             return sent;
-        const st = await settle(sent.requestId, tok);
+        const st = await settle(sent.requestId);
         if (st === "SUCCESS")
             return { status: "accepted", requestId: sent.requestId };
         if (st === "FAILED" || st === "PARTIAL_SUCCESS")
@@ -339,13 +360,13 @@ export function createGoogleClient(config, options = {}) {
             const usable = members.filter((m) => m && (m.email || m.phone));
             // Target empty: remove-all with no removeAsOfTime clears the whole remote list.
             if (usable.length === 0)
-                return removeAll(id, tok);
+                return removeAll(id);
             // Replace without an empty list: record T, ingest, wait for SUCCESS, then remove-all as of T.
             const t = now().toISOString();
             const ingested = await writeMembers("audienceMembers:ingest", id, usable, tok);
             if (ingested.status !== "accepted")
                 return ingested; // a failed ingest never empties the list
-            return removeAll(id, tok, t);
+            return removeAll(id, t);
         },
         async removeFromAudience(advertiser, list, members) {
             const id = listId(list);

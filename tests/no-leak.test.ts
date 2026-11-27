@@ -119,7 +119,9 @@ describe("GD-2954: platform error-body text never reaches an outcome reason", ()
         expect(fieldHas(out, mk)).toBe(false);
         expect(fieldHas(out, mk.toUpperCase())).toBe(false);
         expect(anyHas(cap.lines, mk)).toBe(false);
-        expect(same(out, { status: "unknown", reason: `google_http_${status}` })).toBe(true);
+        // v0.2.0 (S13): the reason is still the fixed code; the masked detail keeps the HTTP status, drops the
+        // non-canonical body status, and masks the marker (it mixes letters and digits) out of the message.
+        expect(same(out, { status: "unknown", reason: `google_http_${status}`, detail: { httpStatus: status, message: "<token>" } })).toBe(true);
       }
     }
   });
@@ -174,7 +176,7 @@ describe("GD-2954: an unusable credentials JSON logs a fixed code", () => {
     const cap = captureConsole();
     let out: unknown;
     try {
-      const c = createAdPlatformClient("GOOGLE", { ADS_GOOGLE_CREDENTIALS_JSON: make(mk), ADS_HOUSE_GOOGLE_CUSTOMER_ID: "1234567890", ADS_GOOGLE_DATAMANAGER_API_BASE: fake.googleBase });
+      const c = createAdPlatformClient("GOOGLE", { ADS_GOOGLE_CREDENTIALS_JSON: make(mk), ADS_HOUSE_GOOGLE_CUSTOMER_ID: "1234567890", ADS_GOOGLE_DATAMANAGER_API_BASE: fake.googleBase }, { sleep: noSleep });
       out = await c.sendConversionBatch(HOUSE, googleBatch(`leak-cred-${code}`));
     } finally {
       cap.restore();

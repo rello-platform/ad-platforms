@@ -116,19 +116,19 @@ describe("Google conversions", () => {
   it("per-minute RESOURCE_EXHAUSTED is RETRYABLE with no notBefore (backoff)", async () => {
     fake.next("google.events", { kind: "status", status: 429, body: quota("IngestionMutateRequestsPerMinutePerProject") });
     const out = await client().sendConversionBatch(HOUSE, batch("g-min", "action-q"));
-    expect(out).toEqual({ status: "retryable", reason: "quota_per_minute" });
+    expect(out).toEqual({ status: "retryable", reason: "quota_per_minute", detail: { httpStatus: 429, status: "RESOURCE_EXHAUSTED", message: "quota", errorInfo: { reason: "RATE_LIMIT_EXCEEDED" } } });
   });
 
   it("daily RESOURCE_EXHAUSTED is RETRYABLE with notBefore = next 00:00 America/Los_Angeles", async () => {
     fake.next("google.events", { kind: "status", status: 429, body: quota("IngestionMutateRequestsPerDayPerProject") });
     const out = await client().sendConversionBatch(HOUSE, batch("g-day", "action-q"));
-    expect(out).toEqual({ status: "retryable", reason: "quota_daily", notBefore: "2026-11-23T08:00:00.000Z" });
+    expect(out).toEqual({ status: "retryable", reason: "quota_daily", notBefore: "2026-11-23T08:00:00.000Z", detail: { httpStatus: 429, status: "RESOURCE_EXHAUSTED", message: "quota", errorInfo: { reason: "RATE_LIMIT_EXCEEDED" } } });
   });
 
   it("RESOURCE_EXHAUSTED without ErrorInfo is treated as daily, reason quota_unclassified", async () => {
     fake.next("google.events", { kind: "status", status: 429, body: quota() });
     const out = await client().sendConversionBatch(HOUSE, batch("g-unc", "action-q"));
-    expect(out).toEqual({ status: "retryable", reason: "quota_unclassified", notBefore: "2026-11-23T08:00:00.000Z" });
+    expect(out).toEqual({ status: "retryable", reason: "quota_unclassified", notBefore: "2026-11-23T08:00:00.000Z", detail: { httpStatus: 429, status: "RESOURCE_EXHAUSTED", message: "quota" } });
   });
 
   it("nextMidnightPacific handles daylight time", () => {
@@ -160,7 +160,7 @@ describe("Google conversions", () => {
     const before = fake.requestsOn("google.events").length;
     const noToken = createGoogleClient(
       { getAccessToken: async () => { throw new Error("token endpoint down"); }, apiBase: fake.googleBase, operatingAccountId: "1" },
-      { timeoutMs: 400 },
+      { timeoutMs: 400, sleep: noSleep },
     );
     expect((await noToken.sendConversionBatch(HOUSE, batch("g-tok", "action-d"))).status).toBe("retryable");
     expect(fake.requestsOn("google.events").length).toBe(before);
