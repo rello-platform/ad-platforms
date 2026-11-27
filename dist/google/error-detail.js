@@ -17,16 +17,18 @@
  * MASKED means control characters are dropped, then EVERY run of 24+ characters from the token alphabet
  * (`A-Z a-z 0-9 _ - + / =`) is replaced whole, first, before any other rule can split it (AUDIT 163, GD-3505): an exact
  * UUID → `<id>`, all hex → `<hex>`, anything else → `<token>`, whatever its mix of letters and digits (a run of letters
- * only is masked too). Only Google's own name shapes are kept readable at that length: snake_case and UPPER_SNAKE words
- * of letters (`remove_all_audience_members`, `UNSUPPORTED_USER_LIST_UPLOAD_KEY_TYPES`) and camelCase of whole words
- * (`removeAllAudienceMembers`). Then e-mail addresses (a masked run inside one still makes the whole address `<email>`),
+ * only is masked too, and so is one shaped like camelCase or snake_case: shape is not a name, GD-3509). A run stays readable only when
+ * it is EXACTLY a name in `known-names.ts` (Google's published error-reason names, and the field and quota names this package
+ * handles; every entry sourced there). Then e-mail addresses (a masked run inside one still makes the whole address `<email>`),
  * hex of 16+, phone-like digit runs and digit runs of 6+ become `<email>` / `<hex>` / `<id>`, all BEFORE the cut.
  * Natural-language words are under 24 characters and pass: they are the diagnosis. A `field` is kept only when every
- * segment is a plausible API field name (FIELD_PATH's shape, at most 40 characters, and no 16+ run mixing letters and
- * digits, GD-3506); otherwise it is `<unrecognized_field>`. A customer id, a list id, a hashed identifier, an access token or an address
+ * segment is a plausible API field name (FIELD_PATH's shape, at most 40 characters, and, judged WHOLE with its underscores
+ * ignored, neither 24+ letters-and-digits nor 16+ mixing letters and digits unless the segment is a listed name, GD-3506 and
+ * GD-3508); otherwise it is `<unrecognized_field>`. A customer id, a list id, a hashed identifier, an access token or an address
  * Google echoes back therefore never reaches a returned field. The outcome's `reason` stays the fixed code: logs that
  * print `reason` are unchanged. `detail` is the only place platform text goes, and only in this masked form.
  */
+import { GOOGLE_KNOWN_NAMES } from "./known-names.js";
 export const PLATFORM_TEXT_MAX = 300;
 export const FIELD_VIOLATIONS_MAX = 10;
 const UPPER_SNAKE = /^[A-Z][A-Z0-9_]{0,63}$/;
@@ -34,14 +36,10 @@ const FIELD_PATH = /^[A-Za-z_][A-Za-z0-9_]{0,63}(\[\d{1,6}\])?(\.[A-Za-z_][A-Za-
 export const FIELD_SEGMENT_MAX = 40;
 const OPAQUE_RUN = /[A-Za-z0-9_\-+/=]{24,}/g;
 const EXACT_UUID = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
-/** Google's own names, readable at any length: snake_case / UPPER_SNAKE words of letters, and camelCase of words. */
-const SNAKE_NAME = /^(?:[a-z]+(?:_[a-z]+)+|[A-Z]+(?:_[A-Z]+)+)$/;
-const CAMEL_NAME = /^[a-z]{2,}(?:[A-Z][a-z]+)+$/;
-/** camelCase only when its words average 3+ letters (`customerMatchTermsOfServiceStatus`), so random case is masked. */
-const isApiName = (run) => SNAKE_NAME.test(run) || (CAMEL_NAME.test(run) && run.replace(/[^A-Z]/g, "").length * 3 <= run.length);
 /** One opaque run's mask: whole, never split. */
 function maskRun(run) {
-    if (isApiName(run))
+    // A long run stays readable only when it IS a listed Google name; casing and underscores say nothing (GD-3509).
+    if (GOOGLE_KNOWN_NAMES.has(run))
         return run;
     if (EXACT_UUID.test(run))
         return "<id>";
@@ -49,14 +47,20 @@ function maskRun(run) {
         return "<hex>";
     return "<token>";
 }
-/** True when `name` (one path segment, index stripped) is a plausible API field name. */
+/**
+ * True when `name` (one path segment, index stripped) is a plausible API field name. The segment is judged WHOLE, its
+ * underscores and hyphens ignored, so a long opaque value cannot pass by being cut into short pieces (GD-3508):
+ * a listed Google name is kept; otherwise 24+ letters-and-digits are opaque, and so are 16+ that mix letters and digits.
+ */
 function plausibleSegment(name) {
     if (name.length > FIELD_SEGMENT_MAX)
         return false;
-    for (const run of name.match(/[A-Za-z0-9]{16,}/g) ?? [])
-        if (/\d/.test(run) && /[A-Za-z]/.test(run))
-            return false;
-    return true;
+    if (GOOGLE_KNOWN_NAMES.has(name))
+        return true;
+    const content = name.replace(/[_-]/g, "");
+    if (content.length >= 24)
+        return false;
+    return !(content.length >= 16 && /\d/.test(content) && /[A-Za-z]/.test(content));
 }
 /** The field path when it is shaped like one and every segment is plausible; otherwise `<unrecognized_field>`. */
 export function maskFieldPath(v) {

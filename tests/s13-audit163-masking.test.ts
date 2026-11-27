@@ -82,8 +82,8 @@ describe("KA addition: a 24+ run of letters only is masked too", () => {
     expect(maskPlatformText("word abcdefghijklmnopqrstuvw end")).toBe("word abcdefghijklmnopqrstuvw end");
   });
 
-  it("Google's own names stay readable: snake_case fields, camelCase fields, UPPER_SNAKE reasons", () => {
-    const text = "remove_all_audience_members failed: removeAllAudienceMembers customerMatchTermsOfServiceStatus UNSUPPORTED_USER_LIST_UPLOAD_KEY_TYPES";
+  it("Google's own names stay readable: listed snake_case fields, camelCase fields, UPPER_SNAKE reasons (round 2: by list, not shape)", () => {
+    const text = "remove_all_audience_members failed: customerMatchTermsOfServiceStatus UNSUPPORTED_USER_LIST_UPLOAD_KEY_TYPES";
     expect(maskPlatformText(text)).toBe(text);
   });
 

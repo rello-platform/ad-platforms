@@ -17,13 +17,14 @@
  * MASKED means control characters are dropped, then EVERY run of 24+ characters from the token alphabet
  * (`A-Z a-z 0-9 _ - + / =`) is replaced whole, first, before any other rule can split it (AUDIT 163, GD-3505): an exact
  * UUID → `<id>`, all hex → `<hex>`, anything else → `<token>`, whatever its mix of letters and digits (a run of letters
- * only is masked too). Only Google's own name shapes are kept readable at that length: snake_case and UPPER_SNAKE words
- * of letters (`remove_all_audience_members`, `UNSUPPORTED_USER_LIST_UPLOAD_KEY_TYPES`) and camelCase of whole words
- * (`removeAllAudienceMembers`). Then e-mail addresses (a masked run inside one still makes the whole address `<email>`),
+ * only is masked too, and so is one shaped like camelCase or snake_case: shape is not a name, GD-3509). A run stays readable only when
+ * it is EXACTLY a name in `known-names.ts` (Google's published error-reason names, and the field and quota names this package
+ * handles; every entry sourced there). Then e-mail addresses (a masked run inside one still makes the whole address `<email>`),
  * hex of 16+, phone-like digit runs and digit runs of 6+ become `<email>` / `<hex>` / `<id>`, all BEFORE the cut.
  * Natural-language words are under 24 characters and pass: they are the diagnosis. A `field` is kept only when every
- * segment is a plausible API field name (FIELD_PATH's shape, at most 40 characters, and no 16+ run mixing letters and
- * digits, GD-3506); otherwise it is `<unrecognized_field>`. A customer id, a list id, a hashed identifier, an access token or an address
+ * segment is a plausible API field name (FIELD_PATH's shape, at most 40 characters, and, judged WHOLE with its underscores
+ * ignored, neither 24+ letters-and-digits nor 16+ mixing letters and digits unless the segment is a listed name, GD-3506 and
+ * GD-3508); otherwise it is `<unrecognized_field>`. A customer id, a list id, a hashed identifier, an access token or an address
  * Google echoes back therefore never reaches a returned field. The outcome's `reason` stays the fixed code: logs that
  * print `reason` are unchanged. `detail` is the only place platform text goes, and only in this masked form.
  */
