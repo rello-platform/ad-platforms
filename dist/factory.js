@@ -58,7 +58,9 @@ export function notConnectedClient(platform) {
         ...(platform === "GOOGLE" ? { requestStatus: async () => "UNREADABLE" } : {}),
     };
 }
-export function createAdPlatformClient(platform, env, options = {}) {
+export function createAdPlatformClient(platform, env, options) {
+    if (typeof options?.sleep !== "function")
+        throw new TypeError("createAdPlatformClient: options.sleep is required (in a Trigger.dev task, wait.for)");
     const cfg = readHouseAdConfig(env);
     if (platform === "META") {
         const token = val(env, "ADS_HOUSE_META_CAPI_TOKEN");

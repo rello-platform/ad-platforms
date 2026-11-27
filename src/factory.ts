@@ -72,11 +72,20 @@ export function notConnectedClient(platform: Platform): AdPlatformClient {
   };
 }
 
-export function createAdPlatformClient(
-  platform: Platform,
-  env: AdEnv,
-  options: { timeoutMs?: number; sleep?: Sleep; statusPollMs?: number; statusMaxReads?: number } = {},
-): AdPlatformClient {
+/**
+ * v0.2.0: `options.sleep` is REQUIRED (it was optional and defaulted to a plain timer). Both clients wait between
+ * status reads (Google 30 min, Meta 30 s); inside a Trigger.dev task that wait must be `wait.for`, or it counts
+ * against maxDuration. A script passes `realSleep` on purpose.
+ */
+export interface AdPlatformClientOptions {
+  timeoutMs?: number;
+  sleep: Sleep;
+  statusPollMs?: number;
+  statusMaxReads?: number;
+}
+
+export function createAdPlatformClient(platform: Platform, env: AdEnv, options: AdPlatformClientOptions): AdPlatformClient {
+  if (typeof options?.sleep !== "function") throw new TypeError("createAdPlatformClient: options.sleep is required (in a Trigger.dev task, wait.for)");
   const cfg = readHouseAdConfig(env);
   if (platform === "META") {
     const token = val(env, "ADS_HOUSE_META_CAPI_TOKEN");

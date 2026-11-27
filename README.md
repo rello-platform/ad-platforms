@@ -16,8 +16,15 @@ It holds **no credential, no key value, no tenant data and no Prisma**. Credenti
 ## Install
 
 ```json
-"@rello-platform/ad-platforms": "github:rello-platform/ad-platforms#v0.1.0"
+"@rello-platform/ad-platforms": "github:rello-platform/ad-platforms#v0.2.0"
 ```
+
+**v0.2.0 is breaking** (S13, Platform KA prompt 2138): `createAdPlatformClient(platform, env, { sleep })` and
+`createGoogleClient(config, { sleep, … })` REQUIRE `sleep`, and throw a `TypeError` at once without it. Every status
+wait (Google 30 min before each read, Meta 30 s) goes through it. In a Trigger.dev task pass `wait.for` (a
+checkpointed wait: not compute time, so it never counts against `maxDuration`); a script passes `realSleep` on purpose.
+v0.1.0 defaulted to a plain timer, and an accepted Google audience write would have slept 30 min inside a 900 s task
+before its first status read.
 
 `dist/` is committed at each tag (the `tracking` pattern).
 
@@ -42,6 +49,20 @@ Audiences:
 - **Meta clear** (an empty target) DELETEs the possibly-applied set. It never sends an empty `usersreplace`.
 - **Google replace** records T, ingests, waits for the request status to reach SUCCESS, then sends `removeAll` with `removeAsOfTime = T`. A FAILED or still-PROCESSING ingest sends no `removeAll`, so the list is never emptied by a failed upload.
 - **Google clear** is `removeAll` with no time.
+- **Google status reads** (v0.2.0) each ask the token source first: the reads span up to `statusMaxReads × statusPollMs`
+  (6 h by default) and a token lives 1 h. A read with no token is `UNREADABLE`, so the write is never reported done.
+
+### Error detail (v0.2.0, Google)
+
+A Google answer that is an error (`rejected`, `retryable`, `unknown`, or `partial` after a later batch) carries
+`detail` (`PlatformErrorDetail`, built only in `src/google/error-detail.ts`): `httpStatus`; `status` when it is a gRPC
+canonical code; `message`, masked; up to 10 `fieldViolations` (`field` only when it is a field path whose every segment
+is a plausible field name: at most 40 characters and, judged whole with underscores ignored, neither 24+ letters-and-digits nor 16+ mixing letters and digits, unless it is a listed Google name; else `<unrecognized_field>`;
+`reason` only when UPPER_SNAKE and either under 24 characters or a name in `src/google/known-names.ts`, else `<token>`; `description` masked); `errorInfo` `reason` (the same rule) / `domain` (only a Google error domain listed in `src/google/known-domains.ts`, else `<unrecognized_domain>`). Masked: control characters are
+dropped; then every run of 24+ characters from `A-Z a-z 0-9 _ - + / =` is replaced whole, before any other rule (an
+exact UUID `<id>`, all hex `<hex>`, anything else `<token>`, letters only included and shaped-like-a-name included; a run stays
+readable only when it is exactly a name in `src/google/known-names.ts`, Google's published error reasons and the field and quota names this package handles); then every e-mail, hex run of 16+, phone-like run and digit run of 6+ becomes `<email>` /
+`<hex>` / `<id>`; then the text is cut to 300 characters. `reason` is unchanged (a fixed code), so a log line printing `reason` carries no platform text.
 
 ## Env names (`createAdPlatformClient`, `readHouseAdConfig`)
 
@@ -72,7 +93,7 @@ Audiences:
 
 ## Logs and reasons
 
-No console line and no `AdOutcome.reason` carries text from a caller's callback (the Google access-token source) or from a platform's error body (GD-2954). Logs carry a fixed code and, for a thrown value, only its kind (a built-in error name, `Error subclass`, or a `typeof`). Reasons carry fixed codes: transport failures carry Node's error code (`meta_before_write:ECONNREFUSED`), a Google error status reaches a reason only when it is a gRPC canonical code, and a request-status error reason only when it is one of the 50 names of Google's published `ProcessingErrorReason` enum (`src/google/processing-error-reasons.ts`, read 2026-11-22; anything else, including a name Google adds later, is `UNRECOGNIZED_REASON`, with the outcome status unchanged; GD-2960). The token endpoint's `error` code reaches a thrown message only when it is an RFC 6749 §5.2 code, else `unrecognized_error`. The Drumbeat's moved audience code (`src/meta/drumbeat-audiences.ts`, `src/google/drumbeat-customer-match.ts`) keeps its live behaviour unchanged until the Drumbeat re-pin.
+No console line and no `AdOutcome.reason` carries text from a caller's callback (the Google access-token source) or from a platform's error body (GD-2954; since v0.2.0 Google's error text goes only to the masked `detail` above, never to a reason or a log). Logs carry a fixed code and, for a thrown value, only its kind (a built-in error name, `Error subclass`, or a `typeof`). Reasons carry fixed codes: transport failures carry Node's error code (`meta_before_write:ECONNREFUSED`), a Google error status reaches a reason only when it is a gRPC canonical code, and a request-status error reason only when it is one of the 50 names of Google's published `ProcessingErrorReason` enum (`src/google/processing-error-reasons.ts`, read 2026-11-22; anything else, including a name Google adds later, is `UNRECOGNIZED_REASON`, with the outcome status unchanged; GD-2960). The token endpoint's `error` code reaches a thrown message only when it is an RFC 6749 §5.2 code, else `unrecognized_error`. The Drumbeat's moved audience code (`src/meta/drumbeat-audiences.ts`, `src/google/drumbeat-customer-match.ts`) keeps its live behaviour unchanged until the Drumbeat re-pin.
 
 ## Development
 

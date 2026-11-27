@@ -1,6 +1,6 @@
 {
   "name": "@rello-platform/ad-platforms",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Ad-platform HTTP clients for the Rello platform: Meta Conversions API and Custom Audiences, Google Data Manager conversions and Customer Match, the Drumbeat's moved Meta and Google Ads API audience clients, per-platform normalization and SHA-256, RFC 8785 frozen batches, and a local fake server. No credentials, no tenant data, no Prisma.",
   "type": "module",
   "main": "./dist/index.js",
